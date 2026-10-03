@@ -164,6 +164,12 @@ function readMatchHistory(limit = 20) {
     .all(limit);
 }
 
+function readHistoryTotals() {
+  const swipes = database.prepare('SELECT COUNT(*) AS count FROM swipe_history').get().count;
+  const matches = database.prepare('SELECT COUNT(*) AS count FROM match_history').get().count;
+  return { swipes, matches };
+}
+
 function getProfileById(id) {
   const profile = database.prepare('SELECT * FROM cat_profiles WHERE id = ?').get(id);
   return profile ? serializeProfile(profile) : null;
@@ -284,7 +290,7 @@ async function start() {
   });
 
   app.get('/api/history', (_request, response) => {
-    response.json({ swipes: readSwipeHistory(), matches: readMatchHistory() });
+    response.json({ swipes: readSwipeHistory(), matches: readMatchHistory(), totals: readHistoryTotals() });
   });
 
   app.post('/api/profiles', (request, response) => {

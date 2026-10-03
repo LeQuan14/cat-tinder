@@ -1,47 +1,19 @@
-import { FormEvent, useEffect, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { ProfileEditorPage } from './ProfileEditorPage';
-
-type CatProfile = {
-  id: number;
-  name: string;
-  age: string;
-  breed: string;
-  distance: string;
-  vibe: string;
-  bio: string;
-  traits: string[];
-  accent: string;
-  image: string;
-};
-
-type SwipeHistoryEntry = {
-  id: number;
-  profileId: number | null;
-  profileName: string;
-  direction: 'left' | 'right';
-  createdAt: string;
-};
-
-type MatchHistoryEntry = {
-  id: number;
-  profileId: number | null;
-  profileName: string;
-  createdAt: string;
-};
-
-type ProfileFormState = {
-  name: string;
-  age: string;
-  breed: string;
-  distance: string;
-  vibe: string;
-  bio: string;
-  traits: string;
-  accent: string;
-  image: string;
-};
-
-type AppView = 'deck' | 'profile-editor';
+import { CatSilhouette, CloseIcon, HeartIcon, SparkIcon } from './components/Icons';
+import { MatchModal } from './components/MatchModal';
+import { SwipeDeck } from './components/SwipeDeck';
+import { Toast, ToastMessage } from './components/Toast';
+import { TopBar } from './components/TopBar';
+import type {
+  AppView,
+  CatProfile,
+  MatchHistoryEntry,
+  ProfileFormState,
+  SwipeDirection,
+  SwipeHistoryEntry,
+  Theme,
+} from './types';
 
 const emptyProfileForm: ProfileFormState = {
   name: 'New Cat',
@@ -54,6 +26,9 @@ const emptyProfileForm: ProfileFormState = {
   accent: 'from-[#ffb36b] via-[#ffd6a5] to-[#fff1df]',
   image: 'linear-gradient(135deg, #1d1a17 0%, #5b4633 45%, #f4d7b5 100%)',
 };
+
+const MATCH_REVEAL_DELAY = 380;
+const THEME_STORAGE_KEY = 'cat-tinder-theme';
 
 function profileToForm(profile: CatProfile): ProfileFormState {
   return {
@@ -69,44 +44,85 @@ function profileToForm(profile: CatProfile): ProfileFormState {
   };
 }
 
-function formatTimestamp(value: string) {
-  return new Date(value.replace(' ', 'T')).toLocaleString([], {
-    month: 'short',
-    day: 'numeric',
-    hour: 'numeric',
-    minute: '2-digit',
-  });
+const relativeTimeFormat = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+
+function formatRelativeTime(value: string) {
+  const date = new Date(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`);
+  const seconds = Math.round((date.getTime() - Date.now()) / 1000);
+  const units: [Intl.RelativeTimeFormatUnit, number][] = [
+    ['day', 86400],
+    ['hour', 3600],
+    ['minute', 60],
+  ];
+
+  for (const [unit, size] of units) {
+    if (Math.abs(seconds) >= size) {
+      return relativeTimeFormat.format(Math.round(seconds / size), unit);
+    }
+  }
+
+  return 'just now';
 }
 
 function getViewFromPath(pathname: string): AppView {
   return pathname === '/profile' || pathname === '/profile/' ? 'profile-editor' : 'deck';
 }
 
+function getInitialTheme(): Theme {
+  try {
+    const stored = window.localStorage.getItem(THEME_STORAGE_KEY);
+
+    if (stored === 'light' || stored === 'dark') {
+      return stored;
+    }
+  } catch {
+    // Storage can be unavailable (private mode); fall back to the OS preference.
+  }
+
+  return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+}
+
 function App() {
   const [profiles, setProfiles] = useState<CatProfile[]>([]);
   const [swipeHistory, setSwipeHistory] = useState<SwipeHistoryEntry[]>([]);
   const [matchHistory, setMatchHistory] = useState<MatchHistoryEntry[]>([]);
+  const [totals, setTotals] = useState({ swipes: 0, matches: 0 });
   const [index, setIndex] = useState(0);
-  const [likedCats, setLikedCats] = useState<CatProfile[]>([]);
-  const [showMatch, setShowMatch] = useState(false);
-  const [swipeDirection, setSwipeDirection] = useState<'left' | 'right' | null>(null);
-  const [dragOffset, setDragOffset] = useState(0);
+  const [matchProfile, setMatchProfile] = useState<CatProfile | null>(null);
   const [loadingProfiles, setLoadingProfiles] = useState(true);
   const [loadingHistory, setLoadingHistory] = useState(true);
   const [savingProfile, setSavingProfile] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [toast, setToast] = useState<ToastMessage | null>(null);
   const [editorMode, setEditorMode] = useState<'edit' | 'new'>('edit');
   const [selectedProfileId, setSelectedProfileId] = useState<number | null>(null);
   const [profileDraft, setProfileDraft] = useState<ProfileFormState>(emptyProfileForm);
   const [currentView, setCurrentView] = useState<AppView>(() => getViewFromPath(window.location.pathname));
+  const [theme, setTheme] = useState<Theme>(getInitialTheme);
 
-  const currentProfile = profiles[index];
-  const hasMoreProfiles = index < profiles.length;
-  const isBusy = loadingProfiles || loadingHistory || savingProfile || swipeDirection !== null;
+  const remainingProfiles = profiles.slice(index);
+  const profilesById = useMemo(() => new Map(profiles.map((profile) => [profile.id, profile])), [profiles]);
+
+  const showToast = useCallback((message: string, tone: ToastMessage['tone'] = 'success') => {
+    setToast({ id: Date.now(), message, tone });
+  }, []);
+
+  const dismissToast = useCallback(() => setToast(null), []);
+  const closeMatch = useCallback(() => setMatchProfile(null), []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+
+    try {
+      window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+    } catch {
+      // Ignore storage failures; the theme still applies for this visit.
+    }
+  }, [theme]);
 
   async function loadProfiles(keepDeckProfileId?: number | null) {
     setLoadingProfiles(true);
-    setError(null);
+    setLoadError(null);
 
     try {
       const response = await fetch('/api/profiles');
@@ -120,29 +136,20 @@ function App() {
 
       setProfiles(nextProfiles);
 
-      if (keepDeckProfileId !== undefined) {
+      if (keepDeckProfileId !== undefined && keepDeckProfileId !== null) {
         const nextIndex = nextProfiles.findIndex((profile) => profile.id === keepDeckProfileId);
         setIndex(nextIndex >= 0 ? nextIndex : 0);
       } else {
-        setIndex((current) => {
-          if (nextProfiles.length === 0) {
-            return 0;
-          }
-
-          return Math.min(current, nextProfiles.length - 1);
-        });
+        setIndex((current) => Math.min(current, nextProfiles.length));
       }
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load profiles');
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : 'Failed to load profiles');
     } finally {
       setLoadingProfiles(false);
     }
   }
 
   async function loadHistory() {
-    setLoadingHistory(true);
-    setError(null);
-
     try {
       const response = await fetch('/api/history');
 
@@ -153,23 +160,21 @@ function App() {
       const data = (await response.json()) as {
         swipes: SwipeHistoryEntry[];
         matches: MatchHistoryEntry[];
+        totals?: { swipes: number; matches: number };
       };
 
       setSwipeHistory(data.swipes);
       setMatchHistory(data.matches);
-    } catch (loadError) {
-      setError(loadError instanceof Error ? loadError.message : 'Failed to load history');
+      setTotals(data.totals ?? { swipes: data.swipes.length, matches: data.matches.length });
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to load history', 'error');
     } finally {
       setLoadingHistory(false);
     }
   }
 
-  async function refreshDashboard(keepDeckProfileId?: number | null) {
-    await Promise.all([loadProfiles(keepDeckProfileId), loadHistory()]);
-  }
-
   useEffect(() => {
-    void refreshDashboard();
+    void Promise.all([loadProfiles(), loadHistory()]);
   }, []);
 
   useEffect(() => {
@@ -187,9 +192,11 @@ function App() {
     }
 
     if (profiles.length === 0) {
-      setSelectedProfileId(null);
-      setProfileDraft(emptyProfileForm);
-      setEditorMode('new');
+      if (!loadingProfiles) {
+        setSelectedProfileId(null);
+        setProfileDraft(emptyProfileForm);
+        setEditorMode('new');
+      }
       return;
     }
 
@@ -205,82 +212,50 @@ function App() {
 
       setProfileDraft(profileToForm(activeProfile));
     }
-  }, [profiles, editorMode, selectedProfileId]);
+  }, [profiles, editorMode, selectedProfileId, loadingProfiles]);
 
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!hasMoreProfiles || showMatch || isBusy || error) {
-        return;
-      }
+  function handleSwipe(profile: CatProfile, direction: SwipeDirection) {
+    // Advance optimistically so the deck feels instant; the server call runs in the background.
+    setIndex((current) => current + 1);
 
-      if (event.key === 'ArrowLeft') {
-        handleSwipe('left');
-      }
-
-      if (event.key === 'ArrowRight') {
-        handleSwipe('right');
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [hasMoreProfiles, showMatch, isBusy, error, index, currentProfile]);
-
-  function handleSwipe(direction: 'left' | 'right') {
-    if (!currentProfile || isBusy || error) {
-      return;
+    if (direction === 'right') {
+      window.setTimeout(() => setMatchProfile(profile), MATCH_REVEAL_DELAY);
     }
 
-    setSwipeDirection(direction);
-    setDragOffset(direction === 'left' ? -60 : 60);
+    void (async () => {
+      try {
+        const response = await fetch('/api/swipes', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ profileId: profile.id, direction }),
+        });
 
-    window.setTimeout(() => {
-      void (async () => {
-        try {
-          const response = await fetch('/api/swipes', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              profileId: currentProfile.id,
-              direction,
-            }),
-          });
-
-          if (!response.ok) {
-            throw new Error(`Failed to record swipe (${response.status})`);
-          }
-
-          if (direction === 'right') {
-            setLikedCats((current) => [currentProfile, ...current].slice(0, 3));
-            setShowMatch(true);
-          }
-
-          setIndex((current) => current + 1);
-          await loadHistory();
-        } catch (swipeError) {
-          setError(swipeError instanceof Error ? swipeError.message : 'Failed to record swipe');
-        } finally {
-          setSwipeDirection(null);
-          setDragOffset(0);
+        if (!response.ok) {
+          throw new Error(`Failed to record swipe (${response.status})`);
         }
-      })();
-    }, 180);
+
+        await loadHistory();
+      } catch (error) {
+        showToast(error instanceof Error ? error.message : 'Failed to record swipe', 'error');
+      }
+    })();
   }
 
   function handleStartOver() {
     setIndex(0);
-    setLikedCats([]);
-    setShowMatch(false);
-    setSwipeDirection(null);
-    setDragOffset(0);
+    setMatchProfile(null);
   }
 
   function navigateToView(nextView: AppView) {
     const nextPath = nextView === 'profile-editor' ? '/profile' : '/';
-    window.history.pushState({}, '', nextPath);
+
+    if (window.location.pathname !== nextPath) {
+      window.history.pushState({}, '', nextPath);
+    }
+
+    setMatchProfile(null);
     setCurrentView(nextView);
+    window.scrollTo({ top: 0 });
   }
 
   function handleSelectProfile(profile: CatProfile) {
@@ -300,8 +275,8 @@ function App() {
       return;
     }
 
+    const deletedName = profilesById.get(selectedProfileId)?.name ?? 'Profile';
     setSavingProfile(true);
-    setError(null);
 
     try {
       const response = await fetch(`/api/profiles/${selectedProfileId}`, {
@@ -313,11 +288,11 @@ function App() {
       }
 
       setSelectedProfileId(null);
-      setEditorMode('new');
-      setProfileDraft(emptyProfileForm);
-      await loadProfiles(currentProfile?.id ?? null);
-    } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : 'Failed to delete profile');
+      setEditorMode('edit');
+      await loadProfiles(remainingProfiles[0]?.id ?? null);
+      showToast(`${deletedName} was removed`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to delete profile', 'error');
     } finally {
       setSavingProfile(false);
     }
@@ -326,12 +301,6 @@ function App() {
   async function handleSaveProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSavingProfile(true);
-    setError(null);
-
-    const payload = {
-      ...profileDraft,
-      traits: profileDraft.traits,
-    };
 
     const isEditingExistingProfile = editorMode === 'edit' && selectedProfileId !== null;
 
@@ -340,10 +309,8 @@ function App() {
         isEditingExistingProfile ? `/api/profiles/${selectedProfileId}` : '/api/profiles',
         {
           method: isEditingExistingProfile ? 'PUT' : 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify(payload),
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(profileDraft),
         },
       );
 
@@ -355,255 +322,187 @@ function App() {
       setEditorMode('edit');
       setSelectedProfileId(data.profile.id);
       setProfileDraft(profileToForm(data.profile));
-      await loadProfiles(currentProfile?.id ?? data.profile.id);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Failed to save profile');
+      await loadProfiles(remainingProfiles[0]?.id ?? data.profile.id);
+      showToast(isEditingExistingProfile ? `Saved changes to ${data.profile.name}` : `${data.profile.name} joined the deck`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : 'Failed to save profile', 'error');
     } finally {
       setSavingProfile(false);
     }
   }
 
-  const recentMatches = matchHistory.slice(0, 3);
-  const recentSwipes = swipeHistory.slice(0, 5);
-  const historyIsEmpty = swipeHistory.length === 0 && matchHistory.length === 0;
-
-  if (currentView === 'profile-editor') {
-    return (
-      <ProfileEditorPage
-        profiles={profiles}
-        editorMode={editorMode}
-        selectedProfileId={selectedProfileId}
-        profileDraft={profileDraft}
-        loadingProfiles={loadingProfiles}
-        savingProfile={savingProfile}
-        error={error}
-        onSelectProfile={handleSelectProfile}
-        onNewProfile={handleNewProfile}
-        onDeleteProfile={handleDeleteProfile}
-        onSaveProfile={handleSaveProfile}
-        onUpdateDraft={setProfileDraft}
-        onBackToDeck={() => navigateToView('deck')}
-      />
-    );
-  }
+  const recentSwipes = swipeHistory.slice(0, 6);
+  const seenCount = Math.min(index, profiles.length);
 
   return (
-    <main className="app-shell">
-      <section className="hero-panel">
-        <div className="hero-intro">
-          <div className="eyebrow">Cat Tinder</div>
-          <h1>Find the perfect purr-sonality match.</h1>
-          <p className="hero-copy">
-            Swipe through adoptable icons, compare their vibes, and match with the feline that fits your couch.
-          </p>
+    <div className="app">
+      <TopBar
+        view={currentView}
+        theme={theme}
+        onNavigate={navigateToView}
+        onToggleTheme={() => setTheme((current) => (current === 'dark' ? 'light' : 'dark'))}
+      />
 
-          <div className="stats-grid">
-            <article>
-              <strong>{loadingProfiles ? '...' : profiles.length}</strong>
-              <span>featured cats</span>
-            </article>
-            <article>
-              <strong>{loadingHistory ? '...' : swipeHistory.length}</strong>
-              <span>swipes saved</span>
-            </article>
-            <article>
-              <strong>{loadingHistory ? '...' : matchHistory.length}</strong>
-              <span>matches saved</span>
-            </article>
-          </div>
+      {currentView === 'profile-editor' ? (
+        <ProfileEditorPage
+          profiles={profiles}
+          editorMode={editorMode}
+          selectedProfileId={selectedProfileId}
+          profileDraft={profileDraft}
+          loadingProfiles={loadingProfiles}
+          savingProfile={savingProfile}
+          error={loadError}
+          onSelectProfile={handleSelectProfile}
+          onNewProfile={handleNewProfile}
+          onDeleteProfile={handleDeleteProfile}
+          onSaveProfile={handleSaveProfile}
+          onUpdateDraft={setProfileDraft}
+          onBackToDeck={() => navigateToView('deck')}
+        />
+      ) : (
+        <main className="discover">
+          <section className="discover-main">
+            <div className="discover-heading">
+              <div>
+                <p className="eyebrow">
+                  <SparkIcon /> Discover
+                </p>
+                <h1>
+                  Find your <span className="gradient-text">purr-fect</span> match
+                </h1>
+              </div>
 
-          <div className="liked-strip">
-            <span>Recent matches</span>
-            <div className="liked-avatars">
-              {recentMatches.length === 0 ? (
-                <p>{historyIsEmpty ? 'No history yet. Start swiping.' : 'No recent matches yet.'}</p>
+              {profiles.length > 0 ? (
+                <div className="deck-progress" aria-label={`${seenCount} of ${profiles.length} cats seen`}>
+                  <span>
+                    {seenCount}/{profiles.length}
+                  </span>
+                  <div className="deck-progress-track">
+                    <div
+                      className="deck-progress-bar"
+                      style={{ width: `${(seenCount / profiles.length) * 100}%` }}
+                    />
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            {loadError ? (
+              <div className="deck-error" role="alert">
+                <h3>We couldn't reach the cat database</h3>
+                <p>{loadError}</p>
+                <button type="button" className="button button-primary" onClick={() => void loadProfiles()}>
+                  Try again
+                </button>
+              </div>
+            ) : (
+              <SwipeDeck
+                profiles={remainingProfiles}
+                loading={loadingProfiles}
+                disabled={matchProfile !== null}
+                onSwipe={handleSwipe}
+                onReset={handleStartOver}
+              />
+            )}
+          </section>
+
+          <aside className="discover-side">
+            <div className="stat-row">
+              <div className="stat">
+                <strong>{loadingProfiles ? '–' : profiles.length}</strong>
+                <span>Cats</span>
+              </div>
+              <div className="stat">
+                <strong>{loadingHistory ? '–' : totals.swipes}</strong>
+                <span>Swipes</span>
+              </div>
+              <div className="stat stat-accent">
+                <strong>{loadingHistory ? '–' : totals.matches}</strong>
+                <span>Matches</span>
+              </div>
+            </div>
+
+            <section className="panel">
+              <header className="panel-header">
+                <h2>Matches</h2>
+                {matchHistory.length > 0 ? <span className="count-pill">{totals.matches}</span> : null}
+              </header>
+
+              {matchHistory.length === 0 ? (
+                <p className="panel-empty">No matches yet. Swipe right on a cat you like.</p>
               ) : (
-                recentMatches.map((cat) => (
-                  <div key={cat.id} className="liked-avatar" title={cat.profileName}>
-                    {cat.profileName.slice(0, 1)}
-                  </div>
-                ))
+                <ul className="match-strip">
+                  {matchHistory.slice(0, 8).map((entry) => {
+                    const profile = entry.profileId !== null ? profilesById.get(entry.profileId) : undefined;
+
+                    return (
+                      <li key={entry.id} title={`${entry.profileName} · ${formatRelativeTime(entry.createdAt)}`}>
+                        <div className="avatar avatar-lg" style={profile ? { background: profile.image } : undefined}>
+                          <CatSilhouette className="avatar-cat" />
+                        </div>
+                        <span>{entry.profileName}</span>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
-            </div>
-          </div>
-        </div>
+            </section>
 
-        <div className="management-stack">
-          <section className="profile-hub-card">
-            <div className="section-heading">
-              <div>
-                <p className="deck-label">Profile management</p>
-                <h2>Open the dedicated studio for new cats and edits</h2>
-              </div>
-            </div>
+            <section className="panel">
+              <header className="panel-header">
+                <h2>Recent activity</h2>
+              </header>
 
-            <p className="hub-copy">
-              Keep the swipe experience focused while using a full page to create new profiles, update existing details, and keep your lineup polished.
-            </p>
+              {recentSwipes.length === 0 ? (
+                <p className="panel-empty">Your swipes will show up here.</p>
+              ) : (
+                <ul className="activity-list">
+                  {recentSwipes.map((entry) => {
+                    const profile = entry.profileId !== null ? profilesById.get(entry.profileId) : undefined;
 
-            <button type="button" className="primary-button" onClick={() => navigateToView('profile-editor')}>
-              Open profile studio
-            </button>
-          </section>
-
-          <section className="history-panel">
-            <div className="section-heading">
-              <div>
-                <p className="deck-label">Saved history</p>
-                <h2>Swipe and match timeline</h2>
-              </div>
-            </div>
-
-            <div className="history-grid">
-              <article className="history-card">
-                <h3>Recent swipes</h3>
-                {recentSwipes.length === 0 ? (
-                  <p className="history-empty">No swipes recorded yet.</p>
-                ) : (
-                  <ul>
-                    {recentSwipes.map((entry) => (
+                    return (
                       <li key={entry.id}>
-                        <strong>{entry.profileName}</strong>
-                        <span className={`direction-badge ${entry.direction}`}>{entry.direction}</span>
-                        <small>{formatTimestamp(entry.createdAt)}</small>
+                        <div className="avatar" style={profile ? { background: profile.image } : undefined}>
+                          <CatSilhouette className="avatar-cat" />
+                        </div>
+                        <div className="activity-copy">
+                          <strong>{entry.profileName}</strong>
+                          <small>{formatRelativeTime(entry.createdAt)}</small>
+                        </div>
+                        <span className={`activity-badge ${entry.direction}`}>
+                          {entry.direction === 'right' ? <HeartIcon /> : <CloseIcon />}
+                          {entry.direction === 'right' ? 'Purr' : 'Pass'}
+                        </span>
                       </li>
-                    ))}
-                  </ul>
-                )}
-              </article>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
 
-              <article className="history-card">
-                <h3>Recent matches</h3>
-                {matchHistory.length === 0 ? (
-                  <p className="history-empty">No matches recorded yet.</p>
-                ) : (
-                  <ul>
-                    {matchHistory.slice(0, 5).map((entry) => (
-                      <li key={entry.id}>
-                        <strong>{entry.profileName}</strong>
-                        <span className="direction-badge right">matched</span>
-                        <small>{formatTimestamp(entry.createdAt)}</small>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </article>
-            </div>
-          </section>
-        </div>
-      </section>
-
-      <section className="deck-panel">
-        <div className="deck-header">
-          <div>
-            <p className="deck-label">Swipe deck</p>
-            <h2>{loadingProfiles ? 'Loading cats from SQLite' : currentProfile ? 'Meet your next cat' : 'All cats have been viewed'}</h2>
-          </div>
-          <button type="button" className="ghost-button" onClick={handleStartOver}>
-            Reset
-          </button>
-        </div>
-
-        <div className="card-stage" aria-live="polite">
-          {error ? (
-            <div className="empty-state">
-              <h3>Could not update the cat database.</h3>
-              <p>{error}</p>
-            </div>
-          ) : loadingProfiles ? (
-            <div className="empty-state">
-              <h3>Loading the litter.</h3>
-              <p>Pulling profiles from SQLite now.</p>
-            </div>
-          ) : currentProfile ? (
-            <article
-              className={`cat-card ${swipeDirection ? `swipe-${swipeDirection}` : ''}`}
-              style={{
-                transform: `translateX(${dragOffset}px) rotate(${dragOffset / 18}deg)`,
-              }}
-            >
-              <div className="card-portrait" style={{ background: currentProfile.image }}>
-                <div className="portrait-glow" aria-hidden="true" />
-                <div className="card-badge">Verified cuddler</div>
+            <section className="panel panel-promo">
+              <div>
+                <h2>Know a cat who deserves the spotlight?</h2>
+                <p>Create and fine-tune profiles in the studio.</p>
               </div>
-
-              <div className="card-copy">
-                <div className="profile-topline">
-                  <div>
-                    <h3>
-                      {currentProfile.name} <span>{currentProfile.age}</span>
-                    </h3>
-                    <p>{currentProfile.breed}</p>
-                  </div>
-                  <div className="distance-chip">{currentProfile.distance}</div>
-                </div>
-
-                <p className="vibe">{currentProfile.vibe}</p>
-                <p className="bio">{currentProfile.bio}</p>
-
-                <div className="trait-list">
-                  {currentProfile.traits.map((trait) => (
-                    <span key={trait}>{trait}</span>
-                  ))}
-                </div>
-              </div>
-            </article>
-          ) : (
-            <div className="empty-state">
-              <h3>That is the whole litter for now.</h3>
-              <p>Reset the deck to browse the cats again.</p>
-            </div>
-          )}
-        </div>
-
-        <div className="action-row">
-          <button
-            type="button"
-            className="action-button nope"
-            onClick={() => handleSwipe('left')}
-            disabled={!currentProfile || isBusy || Boolean(error)}
-          >
-            Pass
-          </button>
-          <button
-            type="button"
-            className="action-button super"
-            onClick={() => handleSwipe('right')}
-            disabled={!currentProfile || isBusy || Boolean(error)}
-          >
-            Purr
-          </button>
-        </div>
-      </section>
-
-      {showMatch && likedCats[0] ? (
-        <div className="match-backdrop" role="presentation" onClick={() => setShowMatch(false)}>
-          <section
-            className="match-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="match-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <p className="match-kicker">It is a match</p>
-            <h2 id="match-title">You and {likedCats[0].name} would absolutely share a window seat.</h2>
-            <p>
-              You just swiped right on a cat with premium nap energy. Keep going or reset the deck to discover
-              more whiskered contenders.
-            </p>
-
-            <div className="match-actions">
-              <button type="button" className="primary-button" onClick={() => setShowMatch(false)}>
-                Keep swiping
+              <button type="button" className="button button-light" onClick={() => navigateToView('profile-editor')}>
+                Open studio
               </button>
-              <button type="button" className="ghost-button" onClick={handleStartOver}>
-                Start over
-              </button>
-            </div>
-          </section>
-        </div>
+            </section>
+          </aside>
+        </main>
+      )}
+
+      {matchProfile ? (
+        <MatchModal
+          profile={matchProfile}
+          onClose={closeMatch}
+          onViewStudio={() => navigateToView('profile-editor')}
+        />
       ) : null}
-    </main>
+
+      <Toast toast={toast} onDismiss={dismissToast} />
+    </div>
   );
 }
 
