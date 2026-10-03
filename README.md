@@ -2,6 +2,13 @@
 
 A playful swipe-style website for matching cats.
 
+## Features
+
+- Drag-to-swipe card stack with Purr / Nope stamps, fly-out animations, and keyboard support (← / →).
+- Animated match celebration, live match strip, and recent-activity feed.
+- Profile studio with searchable library, trait chips, portrait presets, and a live card preview.
+- Light and dark themes (follows your OS by default, toggle in the top bar).
+
 Profiles are stored in a local SQLite database that is created automatically the first time the app runs.
 
 ## Scripts
